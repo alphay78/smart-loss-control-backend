@@ -1,7 +1,7 @@
 # 🛢️ Smart Loss Control – Backend
 
 **Version:** v1.0  
-**Author:** Diana Abimaje  
+**Author:** Alpha Degago
 **Last Updated:** 14-Feb-2026  
 
 ---

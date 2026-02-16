@@ -13,7 +13,7 @@ CREATE TABLE shops (
     shop_name VARCHAR(150) NOT NULL,
     owner_phone VARCHAR(20) UNIQUE NOT NULL,
     aes_key_hash TEXT,
-    currency_code VARCHAR(3) DEFAULT 'NGN' NOT NULL, -- MVP: Strictly Naira
+    currency_code VARCHAR(3) DEFAULT 'NGN' NOT NULL,
     timezone VARCHAR(50) DEFAULT 'Africa/Lagos' NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -27,15 +27,14 @@ CREATE TABLE users (
     full_name VARCHAR(150) NOT NULL,
     phone VARCHAR(20),
     role VARCHAR(20) NOT NULL CHECK (role IN ('OWNER', 'STAFF')),
-    -- PRD: Must be validated as 4-digit numeric in App Layer before hashing
-    pin_hash TEXT NOT NULL, 
+    pin_hash TEXT,  -- allow NULL during OTP onboarding
     is_active BOOLEAN DEFAULT TRUE NOT NULL, 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- ADDING DATABASE DOCUMENTATION FOR THE PIN RULE
 COMMENT ON COLUMN users.pin_hash IS 'Stores the hashed version of a strictly 4-digit numeric PIN (e.g., 1234).';
 
+CREATE UNIQUE INDEX unique_users_phone_per_shop ON users(shop_id, phone);
 CREATE INDEX idx_users_shop_id ON users(shop_id);
 
 -- ============================================
@@ -47,7 +46,8 @@ CREATE TABLE devices (
     device_id TEXT NOT NULL, 
     is_whitelisted BOOLEAN DEFAULT TRUE NOT NULL,
     linked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(user_id, device_id)
+    UNIQUE(user_id, device_id),
+    UNIQUE(device_id)
 );
 
 -- ============================================
@@ -71,12 +71,26 @@ CREATE TABLE inventory (
     shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
     sku_id UUID NOT NULL REFERENCES skus(id) ON DELETE CASCADE,
     quantity INTEGER NOT NULL DEFAULT 0 CHECK (quantity >= 0),
-    cost_price NUMERIC(12,2) NOT NULL,
-    selling_price NUMERIC(12,2) NOT NULL,
+    cost_price NUMERIC(12,2) NOT NULL CHECK (cost_price >= 0),
+    selling_price NUMERIC(12,2) NOT NULL CHECK (selling_price >= 0),
     reorder_level INTEGER DEFAULT 5 NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(shop_id, sku_id)
+    UNIQUE(shop_id, sku_id),
+    CHECK (selling_price >= cost_price)
 );
+
+-- Optional: auto-update updated_at on changes
+CREATE OR REPLACE FUNCTION update_inventory_timestamp() RETURNS TRIGGER AS $$
+BEGIN
+   NEW.updated_at := NOW();
+   RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_inventory_updated_at
+BEFORE UPDATE ON inventory
+FOR EACH ROW
+EXECUTE FUNCTION update_inventory_timestamp();
 
 -- ============================================
 -- TRANSACTIONS (IMMUTABLE LOG WITH OFFLINE SUPPORT)
@@ -87,15 +101,19 @@ CREATE TABLE transactions (
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     sku_id UUID REFERENCES skus(id) ON DELETE SET NULL,
     type VARCHAR(20) NOT NULL CHECK (type IN ('SALE', 'RESTOCK', 'DECANT', 'AUDIT')),
-    quantity INTEGER NOT NULL,
-    is_offline BOOLEAN DEFAULT FALSE NOT NULL, 
-    occurred_at TIMESTAMP NOT NULL,   -- PRD: Device-side timestamp
-    device_id TEXT NOT NULL,           -- Accountability: Which phone?
+    quantity INTEGER NOT NULL CHECK (quantity <> 0),
+    is_offline BOOLEAN DEFAULT FALSE NOT NULL,
+    offline_ref TEXT,
+    occurred_at TIMESTAMP NOT NULL,
+    device_id TEXT NOT NULL,
     meta JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP 
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(shop_id, offline_ref)
 );
 
 CREATE INDEX idx_transactions_occurred_at ON transactions(occurred_at);
+CREATE INDEX idx_transactions_shop_id ON transactions(shop_id);
+CREATE INDEX idx_transactions_sku_id ON transactions(sku_id);
 
 -- ============================================
 -- AUDIT LOGS (EXPECTED VS ACTUAL COUNT)
@@ -115,8 +133,33 @@ CREATE TABLE audit_logs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Trigger: calculate deviation_percent & set status
+CREATE OR REPLACE FUNCTION check_audit_severity() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.expected_qty = 0 THEN
+        NEW.deviation_percent := 100;
+    ELSE
+        NEW.deviation_percent := (NEW.deviation::numeric / NEW.expected_qty) * 100;
+    END IF;
+
+    IF ABS(NEW.deviation_percent) >= 10.00 THEN
+        NEW.status := 'CRITICAL';
+    ELSIF ABS(NEW.deviation_percent) > 0 THEN
+        NEW.status := 'WARNING';
+    ELSE
+        NEW.status := 'OK';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_audit_severity
+BEFORE INSERT ON audit_logs
+FOR EACH ROW EXECUTE FUNCTION check_audit_severity();
+
 -- ============================================
--- ALERTS & SEVERITY LOGIC (TRIGGER)
+-- ALERTS & SEVERITY LOGIC
 -- ============================================
 CREATE TABLE alerts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -129,38 +172,34 @@ CREATE TABLE alerts (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- TRIGGER: Automatically set status to CRITICAL if deviation >= 10%
-CREATE OR REPLACE FUNCTION check_audit_severity() RETURNS TRIGGER AS $$
+-- Trigger: auto-create alerts for CRITICAL
+CREATE OR REPLACE FUNCTION create_alert_if_critical() RETURNS TRIGGER AS $$
 BEGIN
-    NEW.deviation_percent := (NEW.deviation::numeric / NULLIF(NEW.expected_qty, 0)) * 100;
-    
-    IF ABS(NEW.deviation_percent) >= 10.00 THEN
-        NEW.status := 'CRITICAL';
-    ELSIF ABS(NEW.deviation_percent) > 0 THEN
-        NEW.status := 'WARNING';
-    ELSE
-        NEW.status := 'OK';
+    IF NEW.status = 'CRITICAL' THEN
+        INSERT INTO alerts(shop_id, sku_id, audit_log_id, deviation, estimated_loss)
+        VALUES (NEW.shop_id, NEW.sku_id, NEW.id, NEW.deviation, NEW.loss_value_naira);
     END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER trg_audit_severity
-BEFORE INSERT ON audit_logs
-FOR EACH ROW EXECUTE FUNCTION check_audit_severity();
+CREATE TRIGGER trg_create_alert
+AFTER INSERT ON audit_logs
+FOR EACH ROW
+EXECUTE FUNCTION create_alert_if_critical();
 
 -- ============================================
--- RESTOCKS & DECANTS 
+-- RESTOCKS & DECANTS
 -- ============================================
 CREATE TABLE restocks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
     user_id UUID REFERENCES users(id) ON DELETE SET NULL,
     sku_id UUID NOT NULL REFERENCES skus(id) ON DELETE CASCADE,
-    ordered_qty INTEGER NOT NULL,
-    received_qty INTEGER NOT NULL,
-    cost_price NUMERIC(12,2) NOT NULL,
-    selling_price NUMERIC(12,2) NOT NULL,
+    ordered_qty INTEGER NOT NULL CHECK (ordered_qty >= 0),
+    received_qty INTEGER NOT NULL CHECK (received_qty >= 0),
+    cost_price NUMERIC(12,2) NOT NULL CHECK (cost_price >= 0),
+    selling_price NUMERIC(12,2) NOT NULL CHECK (selling_price >= 0),
     discrepancy INTEGER GENERATED ALWAYS AS (received_qty - ordered_qty) STORED,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -173,5 +212,6 @@ CREATE TABLE decants (
     unit_sku_id UUID NOT NULL REFERENCES skus(id) ON DELETE CASCADE,
     cartons_used INTEGER NOT NULL CHECK (cartons_used > 0),
     units_created INTEGER NOT NULL CHECK (units_created > 0),
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CHECK (carton_sku_id <> unit_sku_id)
 );

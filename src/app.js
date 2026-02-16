@@ -4,7 +4,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 
 const { swaggerUi, swaggerDocument } = require("./config/swagger");
-const db = require("./config/db"); // <-- PostgreSQL connection
+const db = require("./config/db"); 
 
 const app = express();
 

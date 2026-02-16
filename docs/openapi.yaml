@@ -2,24 +2,202 @@ openapi: 3.0.0
 info:
   title: Smart Loss Control API
   version: 1.0.0
-  description: Backend API for Smart Loss Control PWA MVP
+  description: Placeholder API Spec Skeleton for frontend to start integration
 
 servers:
   - url: http://localhost:5000
+    description: Local development server
 
 paths:
-  /health:
-    get:
-      summary: Health Check
+  /auth/register:
+    post:
+      summary: Owner registration and OTP
+      tags:
+        - Auth
+      requestBody:
+        description: Owner registration info
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName:
+                  type: string
+                shopName:
+                  type: string
+                phoneNumber:
+                  type: string
+                otp:
+                  type: string
+              required:
+                - fullName
+                - shopName
+                - phoneNumber
+                - otp
       responses:
-        "200":
-          description: API is running
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                  message:
-                    type: string
+        '201':
+          description: Owner registered successfully
+        '400':
+          description: Invalid request
+
+  /inventory/restock:
+    post:
+      summary: Stock-in: Ordered vs Received
+      tags:
+        - Inventory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shopId:
+                  type: string
+                brand:
+                  type: string
+                size:
+                  type: string
+                qtyOrdered:
+                  type: integer
+                qtyReceived:
+                  type: integer
+                costPrice:
+                  type: number
+                sellPrice:
+                  type: number
+              required:
+                - shopId
+                - brand
+                - size
+                - qtyOrdered
+                - qtyReceived
+                - costPrice
+                - sellPrice
+      responses:
+        '201':
+          description: Stock restocked successfully
+        '400':
+          description: Invalid request
+
+  /inventory/decant:
+    post:
+      summary: Bulk-to-retail (1 Carton → 12 Litres)
+      tags:
+        - Inventory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shopId:
+                  type: string
+                brand:
+                  type: string
+                size:
+                  type: string
+                qtyCartons:
+                  type: integer
+              required:
+                - shopId
+                - brand
+                - size
+                - qtyCartons
+      responses:
+        '200':
+          description: Cartons decanted successfully
+        '400':
+          description: Invalid request
+
+  /sales/sync:
+    post:
+      summary: Bulk upload offline sales
+      tags:
+        - Sales
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shopId:
+                  type: string
+                staffId:
+                  type: string
+                sales:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      brand:
+                        type: string
+                      size:
+                        type: string
+                      qtySold:
+                        type: integer
+                      price:
+                        type: number
+              required:
+                - shopId
+                - staffId
+                - sales
+      responses:
+        '200':
+          description: Sales synchronized successfully
+        '400':
+          description: Invalid request
+
+  /ai/trigger-count:
+    get:
+      summary: Trigger Quick-Count AI
+      tags:
+        - AI
+      parameters:
+        - in: query
+          name: shopId
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: AI Quick-Count triggered successfully
+        '400':
+          description: Invalid shop ID
+
+  /audit/verify:
+    post:
+      summary: Submit physical count for AI reconciliation
+      tags:
+        - Audit
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                shopId:
+                  type: string
+                staffId:
+                  type: string
+                brand:
+                  type: string
+                size:
+                  type: string
+                actualQty:
+                  type: integer
+              required:
+                - shopId
+                - staffId
+                - brand
+                - size
+                - actualQty
+      responses:
+        '200':
+          description: Physical count submitted successfully
+        '400':
+          description: Invalid request

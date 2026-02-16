@@ -15,9 +15,9 @@ app.use(helmet());
 app.use(morgan("dev"));
 
 // Health endpoint
-// app.get("/health", (req, res) => {
-//   res.json({ status: "ok", message: "Smart Loss Control Backend running" });
-// });
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", message: "Smart Loss Control Backend running" });
+});
 
 // PostgreSQL test endpoint
 app.get("/db-test", async (req, res) => {

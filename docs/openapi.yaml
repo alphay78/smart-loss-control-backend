@@ -402,3 +402,29 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/DeviationReportResponse"
+
+  # -------------------------
+  # HEALTH
+  # -------------------------
+  /health:
+    get:
+      summary: Server health check
+      tags: [Health]
+      responses:
+        "200":
+          description: Server status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  uptime:
+                    type: string
+                    example: "12 days 4 hours"
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2026-02-16T08:00:00Z"

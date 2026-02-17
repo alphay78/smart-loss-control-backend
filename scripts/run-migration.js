@@ -14,17 +14,30 @@ async function runMigration() {
     console.log('🔄 Starting migration...');
     console.log(`📦 Database: ${process.env.DATABASE_URL.split('@')[1]}`);
     
-    // Read the migration file
-    const migrationPath = path.join(__dirname, '../migrations/001_init.sql');
-    const migrationSQL = fs.readFileSync(migrationPath, 'utf8');
+    // Get migration file from command line argument or default to 001
+    const migrationNumber = process.argv[2] || '001';
+    const migrationPath = path.join(__dirname, `../migrations/${migrationNumber}_*.sql`);
     
-    console.log('📄 Executing migration: 001_init.sql');
+    // Find the migration file
+    const migrationsDir = path.join(__dirname, '../migrations');
+    const files = fs.readdirSync(migrationsDir);
+    const migrationFile = files.find(f => f.startsWith(migrationNumber));
+    
+    if (!migrationFile) {
+      console.error(`❌ Migration file ${migrationNumber}_*.sql not found`);
+      process.exit(1);
+    }
+    
+    const fullPath = path.join(migrationsDir, migrationFile);
+    const migrationSQL = fs.readFileSync(fullPath, 'utf8');
+    
+    console.log(`📄 Executing migration: ${migrationFile}`);
     
     // Execute the migration
     await client.query(migrationSQL);
     
     console.log('✅ Migration completed successfully!');
-    console.log('📊 Database schema created.');
+    console.log('📊 Database schema updated.');
     
   } catch (error) {
     console.error('❌ Migration failed:', error.message);

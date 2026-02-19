@@ -2,9 +2,9 @@ openapi: 3.0.0
 
 info:
   title: Smart Loss Control API
-  version: 1.0.2
+  version: 1.1.0
   description: |
-    Smart Loss Control Backend API (Web MVP).
+    Smart Loss Control Backend API (Web MVP) - Pan-African Edition.
     Designed for FMCG cooking oil inventory reconciliation with offline-first sales logging,
     carton-to-unit decanting, AI-driven spot checks, deviation alerts, and reporting.
     
@@ -12,9 +12,24 @@ info:
     - Offline-first sales logging with IndexedDB sync
     - AI-powered anomaly detection (variance >10% triggers alerts)
     - QR-based staff onboarding with 4-digit PIN authentication
+    - Owner authentication with 4-digit OTP via WhatsApp/SMS
+    - Staff login via name + PIN (no OTP required)
     - Bulk-to-retail conversion (carton → 12 bottles)
     - WhatsApp/SMS alert notifications
     - Real-time deviation tracking with financial loss calculation
+    - Multi-country support (15+ African countries)
+    - USD currency for pan-African operations
+    
+    **Recent Changes (v1.1.0):**
+    - OTP changed to 4-digit (matches frontend design)
+    - Staff authentication changed from phone+PIN to name+PIN
+    - QR code generation moved from /shops/qr-token to /auth/generate-qr
+    - Added /auth/qr-status/:qr_token for real-time countdown
+    - Added /auth/sms-status for SMS service monitoring
+    - QR code expiry: 30 minutes
+    - Currency changed from NGN to USD
+    - Added multi-country support with country_code field
+    - WhatsApp OTP support (SMS fallback)
 
 servers:
   - url: http://localhost:5000
@@ -122,22 +137,27 @@ components:
         phone:
           type: string
           example: "+2348012345678"
+          description: "Owner's phone number with country code"
         otp:
           type: string
           example: "1234"
+          description: "4-digit OTP code received via WhatsApp/SMS"
+          pattern: "^[0-9]{4}$"
 
     StaffPinLoginRequest:
       type: object
       required:
-        - phone
+        - staff_name
         - pin
       properties:
-        phone:
+        staff_name:
           type: string
-          example: "+2348012345678"
+          example: "Chinedu"
+          description: "Staff member's full name (changed from phone number)"
         pin:
           type: string
-          example: "1234"
+          example: "4321"
+          description: "4-digit PIN code"
 
     AuthResponse:
       type: object
@@ -163,6 +183,21 @@ components:
             shop_id:
               type: string
               format: uuid
+        dev_otp:
+          type: string
+          example: "1234"
+          description: "4-digit OTP code (only in development mode)"
+          pattern: "^[0-9]{4}$"
+        sms_status:
+          type: string
+          enum: [development, production, fallback]
+          description: "SMS service mode"
+        sms_sid:
+          type: string
+          description: "Twilio message SID (production mode only)"
+        sms_error:
+          type: string
+          description: "SMS error message (fallback mode only)"
 
     StaffLinkRequest:
       type: object
@@ -235,12 +270,48 @@ components:
         success:
           type: boolean
           example: true
-        qr_token:
+        message:
           type: string
-          example: "SHOPQR-92D8KASJ2"
-        expires_in_minutes:
-          type: integer
-          example: 30
+          example: "QR code generated successfully"
+        qr_code:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            token:
+              type: string
+              example: "SHOPQR-92D8KASJ2"
+            expires_at:
+              type: string
+              format: date-time
+            expires_in_minutes:
+              type: integer
+              example: 30
+            remaining_time:
+              type: object
+              properties:
+                hours:
+                  type: integer
+                  example: 0
+                minutes:
+                  type: integer
+                  example: 30
+                total_minutes:
+                  type: integer
+                  example: 30
+        instructions:
+          type: object
+          properties:
+            usage:
+              type: string
+              example: "Share this QR code with staff to link their devices"
+            expiry:
+              type: string
+              example: "QR code expires in 30m"
+            staff_flow:
+              type: string
+              example: "Staff scans QR → Enters name + PIN → Device linked"
 
     RevokeStaffAccessRequest:
       type: object
@@ -250,6 +321,79 @@ components:
         staff_id:
           type: string
           format: uuid
+
+    QRStatusResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        qr_status:
+          type: object
+          properties:
+            token:
+              type: string
+              example: "SHOPQR-92D8KASJ2"
+            status:
+              type: string
+              enum: [active, expired, used]
+              example: "active"
+            is_expired:
+              type: boolean
+              example: false
+            is_used:
+              type: boolean
+              example: false
+            expires_at:
+              type: string
+              format: date-time
+            created_at:
+              type: string
+              format: date-time
+            remaining_time:
+              type: object
+              properties:
+                hours:
+                  type: integer
+                  example: 0
+                minutes:
+                  type: integer
+                  example: 28
+                seconds:
+                  type: integer
+                  example: 45
+                total_seconds:
+                  type: integer
+                  example: 1725
+        message:
+          type: string
+          example: "QR code valid for 28m 45s"
+
+    SMSStatusResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        sms_service:
+          type: object
+          properties:
+            mode:
+              type: string
+              enum: [development, production]
+              example: "development"
+            configured:
+              type: boolean
+              example: false
+            provider:
+              type: string
+              example: "Twilio"
+        environment:
+          type: string
+          example: "development"
+        message:
+          type: string
+          example: "SMS service not configured - using development mode"
 
     # -------------------------
     # SKU
@@ -728,7 +872,27 @@ paths:
   # -------------------------
   /auth/register-owner:
     post:
-      summary: Register shop owner (OTP request)
+      summary: Register shop owner and send 4-digit OTP
+      description: |
+        **Step 1 of owner authentication**
+        
+        Creates a new shop and owner account, then sends a 4-digit OTP via WhatsApp (preferred) or SMS (fallback).
+        
+        **Flow:**
+        1. Owner provides name, shop name, and phone number
+        2. System creates shop and owner account
+        3. System generates 4-digit OTP (crypto-secure)
+        4. System sends OTP via WhatsApp/SMS
+        5. In development mode, OTP is returned in response as `dev_otp`
+        
+        **Development Mode:**
+        - OTP is always `1234`
+        - OTP is visible in response for testing
+        
+        **Production Mode:**
+        - OTP is random 4-digit (1000-9999)
+        - OTP sent via WhatsApp or SMS
+        - OTP expires in 5 minutes
       tags: [Auth]
       requestBody:
         required: true
@@ -736,15 +900,44 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/OwnerRegisterRequest"
+            examples:
+              kenyan_owner:
+                summary: Kenyan Owner
+                value:
+                  full_name: "Amina Yusuf"
+                  shop_name: "Amina Ventures"
+                  phone: "+254712345678"
+              nigerian_owner:
+                summary: Nigerian Owner
+                value:
+                  full_name: "Chidi Okafor"
+                  shop_name: "Chidi Oil Shop"
+                  phone: "+2348012345678"
       responses:
         "201":
-          description: OTP sent successfully
+          description: OTP sent successfully (check WhatsApp/SMS or dev_otp field)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ApiResponse"
+              examples:
+                development_mode:
+                  summary: Development Mode Response
+                  value:
+                    success: true
+                    message: "OTP sent to +254712345678"
+                    sms_status: "development"
+                    dev_otp: "1234"
+                production_mode:
+                  summary: Production Mode Response
+                  value:
+                    success: true
+                    message: "OTP sent to +254712345678"
+                    sms_status: "production"
+                    channel: "whatsapp"
+                    sms_sid: "SMxxxxxxxxxxxxxxxx"
         "400":
-          description: Validation error
+          description: Validation error (missing required fields)
           content:
             application/json:
               schema:
@@ -752,7 +945,30 @@ paths:
 
   /auth/verify-otp:
     post:
-      summary: Verify OTP and activate owner account
+      summary: Verify 4-digit OTP and get JWT token
+      description: |
+        **Step 2 of owner authentication**
+        
+        Verifies the 4-digit OTP and returns a JWT token for authenticated requests.
+        
+        **Flow:**
+        1. Owner enters 4-digit OTP from WhatsApp/SMS
+        2. System verifies OTP is valid and not expired
+        3. System marks OTP as used (one-time use)
+        4. System generates JWT token (12-hour expiry)
+        5. Owner is logged in
+        
+        **Security:**
+        - OTP expires after 5 minutes
+        - OTP can only be used once
+        - Rate limiting: Max 5 attempts per 15 minutes
+        - Token expires after 12 hours
+        
+        **Development Mode:**
+        - Use OTP `1234` (always works)
+        
+        **Production Mode:**
+        - Use OTP from WhatsApp/SMS
       tags: [Auth]
       requestBody:
         required: true
@@ -760,23 +976,60 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/OTPVerifyRequest"
+            examples:
+              verify_otp:
+                summary: Verify OTP
+                value:
+                  phone: "+254712345678"
+                  otp: "1234"
       responses:
         "200":
-          description: OTP verified successfully
+          description: OTP verified successfully, JWT token returned
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+              examples:
+                success:
+                  summary: Successful Verification
+                  value:
+                    success: true
+                    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                    user:
+                      id: "uuid-here"
+                      shop_id: "shop-uuid"
+                      full_name: "Amina Yusuf"
+                      phone: "+254712345678"
+                      role: "OWNER"
         "400":
-          description: Invalid OTP
+          description: Invalid or expired OTP
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_otp:
+                  summary: Invalid OTP
+                  value:
+                    success: false
+                    message: "Invalid or expired OTP"
+        "429":
+          description: Too many attempts (rate limit exceeded)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                rate_limit:
+                  summary: Rate Limit Exceeded
+                  value:
+                    success: false
+                    message: "Too many OTP requests. Please wait 15 minutes and try again."
 
   /auth/login-pin:
     post:
-      summary: Staff login via phone + 4-digit PIN
+      summary: Staff login via name + 4-digit PIN
+      description: Staff members log in using their full name and PIN (changed from phone-based login)
       tags: [Auth]
       requestBody:
         required: true
@@ -822,6 +1075,66 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /auth/generate-qr:
+    post:
+      summary: Generate staff onboarding QR token (Owner only)
+      description: Creates a QR code that expires in 30 minutes for staff onboarding
+      tags: [Auth]
+      security:
+        - BearerAuth: []
+      responses:
+        "201":
+          description: QR token generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QRTokenResponse"
+        "403":
+          description: Only owners can generate QR codes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/qr-status/{qr_token}:
+    get:
+      summary: Check QR code status with countdown timer
+      description: Public endpoint to check if QR code is active, expired, or used. Returns remaining time for countdown display.
+      tags: [Auth]
+      parameters:
+        - name: qr_token
+          in: path
+          required: true
+          schema:
+            type: string
+          description: QR token to check
+      responses:
+        "200":
+          description: QR status retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QRStatusResponse"
+        "404":
+          description: QR code not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/sms-status:
+    get:
+      summary: Get SMS service status
+      description: Development endpoint to check SMS service configuration and mode
+      tags: [Auth]
+      responses:
+        "200":
+          description: SMS status retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SMSStatusResponse"
+
   # -------------------------
   # SHOPS
   # -------------------------
@@ -836,18 +1149,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Shop"
-
-  /shops/qr-token:
-    post:
-      summary: Generate staff onboarding QR token (Owner only)
-      tags: [Shops]
-      responses:
-        "201":
-          description: QR token generated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/QRTokenResponse"
 
   /shops/staff/revoke:
     patch:

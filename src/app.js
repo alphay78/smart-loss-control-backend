@@ -4,7 +4,8 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 
 const { swaggerUi, swaggerDocument } = require("./config/swagger");
-const db = require("./config/db"); 
+const { pool } = require("./config/db");
+const authRoutes = require("./routes/authRoutes");
 
 const app = express();
 
@@ -22,12 +23,15 @@ app.get("/health", (req, res) => {
 // PostgreSQL test endpoint
 app.get("/db-test", async (req, res) => {
   try {
-    const result = await db.query("SELECT NOW()");
+    const result = await pool.query("SELECT NOW()");
     res.json({ dbTime: result.rows[0].now });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
+
+// Routes
+app.use("/auth", authRoutes);
 
 // Swagger docs
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerDocument));

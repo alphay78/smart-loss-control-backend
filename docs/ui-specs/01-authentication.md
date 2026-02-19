@@ -374,7 +374,7 @@ POST /auth/staff/link
 
 | Field Name | Input Type | Validation | Backend Field | Required |
 |------------|-----------|------------|---------------|----------|
-| Phone Number | Tel input | Nigerian format | `phone` | Yes |
+| Staff Name | Text input | Min 2 chars | `staff_name` | Yes |
 | PIN | Number input | Exactly 4 digits | `pin` | Yes |
 
 **UI Layout:**
@@ -384,9 +384,9 @@ POST /auth/staff/link
 │                                 │
 │  Staff Login                    │
 │                                 │
-│  Phone Number                   │
+│  Your Name                      │
 │  ┌───────────────────────────┐  │
-│  │ +234 801 234 5678         │  │
+│  │ Chinedu                   │  │
 │  └───────────────────────────┘  │
 │                                 │
 │  Enter Your PIN                 │
@@ -407,7 +407,7 @@ POST /auth/staff/link
 ```javascript
 POST /auth/login-pin
 {
-  "phone": "+2348012345678",
+  "staff_name": "Chinedu",
   "pin": "4321"
 }
 
@@ -418,7 +418,7 @@ POST /auth/login-pin
   "user": {
     "id": "uuid",
     "role": "STAFF",
-    "phone": "+2348012345678",
+    "full_name": "Chinedu",
     "shop_id": "uuid"
   }
 }
@@ -426,12 +426,12 @@ POST /auth/login-pin
 // Error Response
 {
   "success": false,
-  "message": "Invalid phone or PIN"
+  "message": "Invalid name or PIN"
 }
 ```
 
 **Design Notes:**
-- Auto-focus on phone input
+- Auto-focus on name input
 - PIN should be masked
 - Show "Invalid credentials" error if wrong
 - On success, store `token` and navigate to Staff Dashboard
